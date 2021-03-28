@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Diagnostics;
 using System.Reflection.Emit;
 using HarmonyLib;
 using UnityEngine;
@@ -6,7 +7,6 @@ using Verse;
 
 namespace ThingFilterOptimizer
 {
-    [HarmonyPatch(typeof(ThingFilterUI), nameof(ThingFilterUI.DoThingFilterConfigWindow))]
     public class ThingFilterOptimizerMod : Mod
     {
         public ThingFilterOptimizerMod(ModContentPack content) : base(content)
@@ -14,72 +14,121 @@ namespace ThingFilterOptimizer
             var h = new Harmony("pirateby.thingfilteroptimizer");
             h.PatchAll();
 
-            var rsaPatch = AccessTools.Method("RSA.Core.ThingFilter_InjectFilter:Before_DoCategoryChildren");
-            if (ModLister.GetActiveModWithIdentifier("Storage.Search.RSA") != null && rsaPatch != null)
-            {
-                h.Patch(typeof(Listing_TreeThingFilter_ViewOpt).GetMethod("DoCategoryChildren"), prefix: new HarmonyMethod(rsaPatch));
-                Log.Message($"[ThingFilterOptimizer] RSA support patch");
-            }
+            // MANUAL PATCHING VISIBLE METHODS, HARMONY NOT WANT PATCH ALL OVERLOADS WITH HarmonyPatch attribute //
+            #if DEBUG
+            var visibleMethod = new HarmonyMethod(typeof(Listing_TreeThingFilter_Patch), nameof(Listing_TreeThingFilter_Patch.VisibleDbg));
+            #else
+            var visibleMethod = new HarmonyMethod(typeof(Listing_TreeThingFilter_Patch), nameof(Listing_TreeThingFilter_Patch.Visible));
+            #endif
+
+            h.Patch(AccessTools.Method(typeof(Listing_TreeThingFilter), nameof(Listing_TreeThingFilter.Visible), new []{typeof(ThingDef)}), prefix: visibleMethod);
+            h.Patch(AccessTools.Method(typeof(Listing_TreeThingFilter), nameof(Listing_TreeThingFilter.Visible), new []{typeof(TreeNode_ThingCategory)}), prefix: visibleMethod);
+            h.Patch(AccessTools.Method(typeof(Listing_TreeThingFilter), nameof(Listing_TreeThingFilter.Visible_NewTemp)), prefix: visibleMethod);
+
+            // unused Obsolete method
+            //h.Patch(AccessTools.Method(typeof(Listing_TreeThingFilter), nameof(Listing_TreeThingFilter.Visible), new []{typeof(SpecialThingFilterDef)}), prefix: visibleMethod);
         }
 
-        [HarmonyTranspiler]
-        public static IEnumerable<CodeInstruction> DoThingFilterConfigWindow_Transpiler(IEnumerable<CodeInstruction> instructions, ILGenerator ilGen)
+        [Conditional("DEBUG")]
+        public static void DbgLog(string text) => Log.Warning(text);
+    }
+
+    // Store scroll postion for Listing_TreeThingFilter patches
+    [HarmonyPatch(typeof(ThingFilterUI), nameof(ThingFilterUI.DoThingFilterConfigWindow))]
+    public class ThingFilterUI_DoThingFilterConfigWindow_Patch
+    {
+        public static bool InDoThingFilterConfigWindow;
+
+        [HarmonyPrefix]
+        public static void DoThingFilterConfigWindow_Prefix(ref Rect rect, ref Vector2 scrollPosition)
         {
-            var listingCtor = AccessTools.Constructor(typeof(Listing_TreeThingFilter),
-                new[]
-                {
-                    typeof(ThingFilter), typeof(ThingFilter), typeof(IEnumerable<ThingDef>),
-                    typeof(IEnumerable<SpecialThingFilterDef>), typeof(List<ThingDef>)
-                });
-            var listingCtorMy = AccessTools.Constructor(typeof(Listing_TreeThingFilter_ViewOpt),
-                new[]
-                {
-                    typeof(ThingFilter), typeof(ThingFilter), typeof(IEnumerable<ThingDef>),
-                    typeof(IEnumerable<SpecialThingFilterDef>), typeof(List<ThingDef>),
-                    typeof(Rect), typeof(Vector2).MakeByRefType()
-                });
-            var doCategoryChildren = AccessTools.Method(typeof(Listing_TreeThingFilter), nameof(Listing_TreeThingFilter.DoCategoryChildren));
-            var doCategoryChildrenMy = AccessTools.Method(typeof(Listing_TreeThingFilter_ViewOpt), nameof(Listing_TreeThingFilter_ViewOpt.DoCategoryChildren));
-
-            /***
-             * Replace class in code Listing_TreeThingFilter => Listing_TreeThingFilter_ViewOpt with new parameter 'scrollPosition':
-             *   Listing_TreeThingFilter listing_TreeThingFilter = new Listing_TreeThingFilter(filter, parentFilter, forceHiddenDefs, forceHiddenFilters, suppressSmallVolumeTags);
-			 *   listing_TreeThingFilter.Begin(rect3);
-			 *   listing_TreeThingFilter.DoCategoryChildren(node, 0, openMask, map, true);
-			 *   listing_TreeThingFilter.End();
-             */
-            var myTypeLocalVar = ilGen.DeclareLocal(typeof(Listing_TreeThingFilter_ViewOpt));
-            int successPatches = 0;
-            int replacedVars = 0;
-            foreach (var ci in instructions)
-            {
-
-                if (ci.operand is LocalBuilder local && local.LocalType == typeof(Listing_TreeThingFilter))
-                {
-                    ci.operand = myTypeLocalVar; // replace to var with type: Listing_TreeThingFilter_ViewOpt
-                    replacedVars++;
-                }
-                else if (ci.opcode == OpCodes.Newobj && ci.operand == listingCtor)
-                {
-                    yield return new CodeInstruction(OpCodes.Ldarg_0); // add argument 'rect' for my class
-                    yield return new CodeInstruction(OpCodes.Ldarg_1); // add argument 'scrollPosition' for my class
-                    ci.operand = listingCtorMy; // replace ctor
-                    successPatches++;
-                }
-                else if (ci.opcode == OpCodes.Callvirt && ci.operand == doCategoryChildren)
-                {
-                    ci.operand = doCategoryChildrenMy; // replace method
-                    successPatches++;
-                }
-                yield return ci;
-            }
-
-            //Log.Message($"DoThingFilterConfigWindow replaced vars: {replacedVars}");
-
-            if (successPatches != 2)
-            {
-                Log.Error($"Outdated transpiler ThingFilterUI:DoThingFilterConfigWindow. successPatches: {successPatches}");
-            }
+            InDoThingFilterConfigWindow = true;
+            Listing_TreeThingFilter_Patch.ViewRect = rect;
+            Listing_TreeThingFilter_Patch.ScrollPosition = scrollPosition;
+            ThingFilterOptimizerMod.DbgLog("START");
         }
+
+        [HarmonyPostfix]
+        public static void DoThingFilterConfigWindow_Postfix()
+        {
+            InDoThingFilterConfigWindow = false;
+            ThingFilterOptimizerMod.DbgLog("END");
+        }
+    }
+    
+    // Draw only visible elements
+    [HarmonyPatch(typeof(Listing_TreeThingFilter))]
+    public class Listing_TreeThingFilter_Patch
+    {
+        public static Rect ViewRect;
+
+        public static Vector2 ScrollPosition;
+
+        public static bool InDoThingFilterConfigWindow => ThingFilterUI_DoThingFilterConfigWindow_Patch.InDoThingFilterConfigWindow;
+
+        public static bool InViewArea(Listing_TreeThingFilter l) => l.curY > (ScrollPosition.y - l.listingRect.y) && l.curY < (ScrollPosition.y - l.listingRect.y) + ViewRect.height;
+        
+        public static bool IsOutOfHeight(Listing_TreeThingFilter l) => l.curY > l.listingRect.height;
+
+        [HarmonyPrefix]
+        [HarmonyPatch(nameof(Listing_TreeThingFilter.DoSpecialFilter))]
+        public static bool DoSpecialFilter(Listing_TreeThingFilter __instance, SpecialThingFilterDef sfDef)
+        {
+            if (!InDoThingFilterConfigWindow || !sfDef.configurable || InViewArea(__instance)) return true;
+            ThingFilterOptimizerMod.DbgLog("SKIP");
+            __instance.EndLine();
+            return false;
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(nameof(Listing_TreeThingFilter.DoCategory))]
+        public static bool DoCategory(Listing_TreeThingFilter __instance, TreeNode_ThingCategory node, int indentLevel, int openMask, Map map)
+        {
+            if (!InDoThingFilterConfigWindow || InViewArea(__instance)) return true;
+            ThingFilterOptimizerMod.DbgLog("SKIP");
+            __instance.EndLine();
+            if (node.IsOpen(openMask)) __instance.DoCategoryChildren(node, indentLevel + 1, openMask, map);
+            return false;
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(nameof(Listing_TreeThingFilter.DoThingDef))]
+        public static bool DoThingDef(Listing_TreeThingFilter __instance)
+        {
+            if (!InDoThingFilterConfigWindow || InViewArea(__instance)) return true;
+            ThingFilterOptimizerMod.DbgLog("SKIP");
+            __instance.EndLine();
+            return false;
+        }
+
+        /* SKIP DRAW OUT OF RANGE ELEMENTS IN METHOD DoCategoryChildren */
+        public static bool Visible(Listing_TreeThingFilter __instance) => !InDoThingFilterConfigWindow || !IsOutOfHeight(__instance);
+
+        public static bool VisibleDbg(Listing_TreeThingFilter __instance)
+        {
+            if (!InDoThingFilterConfigWindow)
+                return true;
+
+            bool result = !IsOutOfHeight(__instance);
+            if (!result)
+                ThingFilterOptimizerMod.DbgLog("SKIP OUT OF RANGE");
+
+            return result;
+        }
+
+        //[HarmonyPrefix]
+        //[HarmonyPatch(nameof(Listing_TreeThingFilter.Visible), typeof(SpecialThingFilterDef))] // unused Obsolete method
+        //public static bool Visible0(Listing_TreeThingFilter __instance) => !InDoThingFilterConfigWindow || !IsOutOfHeight(__instance);
+
+        //[HarmonyPrefix]
+        //[HarmonyPatch(nameof(Listing_TreeThingFilter.Visible), typeof(ThingDef))]
+        //public static bool Visible1(Listing_TreeThingFilter __instance) => !InDoThingFilterConfigWindow || !IsOutOfHeight(__instance);
+
+        //[HarmonyPatch(nameof(Listing_TreeThingFilter.Visible), typeof(TreeNode_ThingCategory))]
+        //public static bool Visible2(Listing_TreeThingFilter __instance) => !InDoThingFilterConfigWindow || !IsOutOfHeight(__instance);
+
+        //[HarmonyPrefix]
+        //[HarmonyPatch(nameof(Listing_TreeThingFilter.Visible_NewTemp))]
+        //public static bool Visible_NewTemp(Listing_TreeThingFilter __instance) => !InDoThingFilterConfigWindow || !IsOutOfHeight(__instance);
     }
 }
