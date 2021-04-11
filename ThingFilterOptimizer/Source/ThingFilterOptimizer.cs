@@ -27,6 +27,14 @@ namespace ThingFilterOptimizer
 
             // unused Obsolete method
             //h.Patch(AccessTools.Method(typeof(Listing_TreeThingFilter), nameof(Listing_TreeThingFilter.Visible), new []{typeof(SpecialThingFilterDef)}), prefix: visibleMethod);
+
+            // optimize StuffCount
+            var stuffCountDrawer = AccessTools.Method("StuffCount.Listing_TreeThingFilter_DoThingDef_Patch:Postfix");
+            if (stuffCountDrawer != null)
+            {
+                h.Patch(stuffCountDrawer, prefix: new HarmonyMethod(typeof(Listing_TreeThingFilter_Patch), nameof(Listing_TreeThingFilter_Patch.StuffCount_DoThingDef_Postfix_Wrap)));
+                Log.Message($"[ThingFilterOptimizer] StuffCount patch wrapped");
+            }
         }
 
         [Conditional("DEBUG")]
@@ -52,6 +60,7 @@ namespace ThingFilterOptimizer
         public static void DoThingFilterConfigWindow_Postfix()
         {
             InDoThingFilterConfigWindow = false;
+            Listing_TreeThingFilter_Patch.l = null;
             ThingFilterOptimizerMod.DbgLog("END");
         }
     }
@@ -64,52 +73,71 @@ namespace ThingFilterOptimizer
 
         public static Vector2 ScrollPosition;
 
+        public static Listing_TreeThingFilter l;
+
         public static bool InDoThingFilterConfigWindow => ThingFilterUI_DoThingFilterConfigWindow_Patch.InDoThingFilterConfigWindow;
 
-        public static bool InViewArea(Listing_TreeThingFilter l) => l.curY > (ScrollPosition.y - l.listingRect.y) && l.curY < (ScrollPosition.y - l.listingRect.y) + ViewRect.height;
+        public static bool InViewArea => l.curY > (ScrollPosition.y - l.listingRect.y) && l.curY < (ScrollPosition.y - l.listingRect.y) + ViewRect.height;
         
-        public static bool IsOutOfHeight(Listing_TreeThingFilter l) => l.curY > l.listingRect.height;
+        public static bool IsOutOfHeight => l.curY > l.listingRect.height;
+
+        [HarmonyPostfix]
+        [HarmonyPatch(MethodType.Constructor, typeof(ThingFilter), typeof(ThingFilter), typeof(IEnumerable<ThingDef>), typeof(IEnumerable<SpecialThingFilterDef>), typeof(List<ThingDef>))]
+        [HarmonyPriority(Priority.First)]
+        public static void Ctor(Listing_TreeThingFilter __instance)
+        {
+            l = __instance;
+        }
 
         [HarmonyPrefix]
         [HarmonyPatch(nameof(Listing_TreeThingFilter.DoSpecialFilter))]
-        public static bool DoSpecialFilter(Listing_TreeThingFilter __instance, SpecialThingFilterDef sfDef)
+        [HarmonyPriority(Priority.First)]
+        public static bool DoSpecialFilter(SpecialThingFilterDef sfDef)
         {
-            if (!InDoThingFilterConfigWindow || !sfDef.configurable || InViewArea(__instance)) return true;
+            if (!InDoThingFilterConfigWindow || !sfDef.configurable || InViewArea) return true;
             ThingFilterOptimizerMod.DbgLog("SKIP");
-            __instance.EndLine();
+            l.EndLine();
             return false;
         }
 
         [HarmonyPrefix]
         [HarmonyPatch(nameof(Listing_TreeThingFilter.DoCategory))]
-        public static bool DoCategory(Listing_TreeThingFilter __instance, TreeNode_ThingCategory node, int indentLevel, int openMask, Map map)
+        [HarmonyPriority(Priority.First)]
+        public static bool DoCategory(TreeNode_ThingCategory node, int indentLevel, int openMask, Map map)
         {
-            if (!InDoThingFilterConfigWindow || InViewArea(__instance)) return true;
+            if (!InDoThingFilterConfigWindow || InViewArea) return true;
             ThingFilterOptimizerMod.DbgLog("SKIP");
-            __instance.EndLine();
-            if (node.IsOpen(openMask)) __instance.DoCategoryChildren(node, indentLevel + 1, openMask, map);
+            l.EndLine();
+            if (node.IsOpen(openMask)) l.DoCategoryChildren(node, indentLevel + 1, openMask, map);
             return false;
         }
 
         [HarmonyPrefix]
         [HarmonyPatch(nameof(Listing_TreeThingFilter.DoThingDef))]
-        public static bool DoThingDef(Listing_TreeThingFilter __instance)
+        [HarmonyPriority(Priority.First)]
+        public static bool DoThingDef()
         {
-            if (!InDoThingFilterConfigWindow || InViewArea(__instance)) return true;
+            if (!InDoThingFilterConfigWindow || InViewArea) return true;
             ThingFilterOptimizerMod.DbgLog("SKIP");
-            __instance.EndLine();
+            l.EndLine();
             return false;
         }
 
+        /* Disable postfix in mod StuffCount */
+        public static bool StuffCount_DoThingDef_Postfix_Wrap() 
+        {
+            return !InDoThingFilterConfigWindow || InViewArea;
+        }
+
         /* SKIP DRAW OUT OF RANGE ELEMENTS IN METHOD DoCategoryChildren */
-        public static bool Visible(Listing_TreeThingFilter __instance) => !InDoThingFilterConfigWindow || !IsOutOfHeight(__instance);
+        public static bool Visible(Listing_TreeThingFilter __instance) => !InDoThingFilterConfigWindow || !IsOutOfHeight;
 
         public static bool VisibleDbg(Listing_TreeThingFilter __instance)
         {
             if (!InDoThingFilterConfigWindow)
                 return true;
 
-            bool result = !IsOutOfHeight(__instance);
+            bool result = !IsOutOfHeight;
             if (!result)
                 ThingFilterOptimizerMod.DbgLog("SKIP OUT OF RANGE");
 
